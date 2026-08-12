@@ -25,6 +25,8 @@
 
 #include "AboutScreen.h"
 #include "agent/AgentServer.h"
+#include "agent/AgentSettings.h"
+#include "agent/SnapshotExporter.h"
 #include "AudioProcessor.h"
 #include "BattleChipView.h"
 #include "CheatsView.h"
@@ -1642,6 +1644,7 @@ void Window::setupMenu(QMenuBar* menubar) {
 		m_controller->screenshot();
 	}, "av", tr("F12"));
 
+	addGameAction(tr("Export agent snapshot"), "agentSnapshot", this, &Window::exportAgentSnapshot, "av");
 #endif
 
 #ifdef USE_FFMPEG
@@ -2185,6 +2188,32 @@ void Window::syncAgentContext() {
 	}
 	agent->setController(m_controller);
 	agent->setRomPath(windowFilePath());
+}
+
+void Window::exportAgentSnapshot() {
+	auto showStatus = [this](const QString& message) {
+		if (m_display) {
+			m_display->showMessage(message);
+		}
+		LOG(QT, INFO) << message;
+	};
+
+	if (!m_controller) {
+		showStatus(tr("Agent snapshot failed: no game loaded"));
+		return;
+	}
+
+	// windowFilePath is the normal source; allow empty and let SnapshotExporter
+	// fall back (archive loads / odd paths) rather than silently returning.
+	const QString romPath = windowFilePath();
+	const AgentExportRegions regions = AgentExportRegions::fromConfig(m_config);
+	QString error;
+	const QString outDir = SnapshotExporter::exportSnapshot(m_controller.get(), romPath, regions, &error);
+	if (outDir.isEmpty()) {
+		showStatus(tr("Agent snapshot failed: %1").arg(error.isEmpty() ? tr("unknown error") : error));
+		return;
+	}
+	showStatus(tr("Agent snapshot saved to %1").arg(outDir));
 }
 
 void Window::attachDisplay() {

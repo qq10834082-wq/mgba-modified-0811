@@ -145,6 +145,7 @@ private slots:
 	void attachDisplay();
 	void changeRenderer();
 
+	void exportAgentSnapshot();
 	void syncAgentContext();
 
 	void tryMakePortable();

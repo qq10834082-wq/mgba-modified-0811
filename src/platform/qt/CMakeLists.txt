@@ -82,6 +82,7 @@ set(SOURCE_FILES
 	agent/AgentServer.cpp
 	agent/AgentSettings.cpp
 	agent/AgentSettingsWidget.cpp
+	agent/SnapshotExporter.cpp
 	ApplicationUpdater.cpp
 	ApplicationUpdatePrompt.cpp
 	AssetInfo.cpp

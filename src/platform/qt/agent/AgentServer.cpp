@@ -6,6 +6,7 @@
 #include "agent/AgentServer.h"
 
 #include "agent/AgentSettings.h"
+#include "agent/SnapshotExporter.h"
 #include "ConfigController.h"
 #include "CoreController.h"
 #include "LogController.h"
@@ -331,6 +332,18 @@ QJsonObject AgentServer::dispatch(const QJsonObject& request) {
 	if (method == QStringLiteral("reset")) {
 		m_controller->reset();
 		return makeResponse(id, true);
+	}
+
+	if (method == QStringLiteral("export_snapshot")) {
+		const AgentSettings settings = AgentSettings::fromConfig(m_config);
+		QString error;
+		const QString outDir = SnapshotExporter::exportSnapshot(m_controller.get(), m_romPath, settings.regions, &error);
+		if (outDir.isEmpty()) {
+			return makeError(id, -32603, error.isEmpty() ? QStringLiteral("export failed") : error);
+		}
+		QJsonObject result;
+		result.insert(QStringLiteral("path"), outDir);
+		return makeResponse(id, result);
 	}
 
 	return makeError(id, -32601, QStringLiteral("unknown method: ") + method);

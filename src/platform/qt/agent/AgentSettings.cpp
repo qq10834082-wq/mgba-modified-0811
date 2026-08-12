@@ -7,6 +7,8 @@
 
 #include "ConfigController.h"
 
+#include <cstring>
+
 using namespace QGBA;
 
 static bool optionBool(const ConfigController* config, const char* key, bool defaultVal) {
@@ -15,6 +17,63 @@ static bool optionBool(const ConfigController* config, const char* key, bool def
 		return defaultVal;
 	}
 	return value != QLatin1String("0");
+}
+
+AgentExportRegions AgentExportRegions::fromConfig(const ConfigController* config) {
+	AgentExportRegions regions;
+	regions.ewram = optionBool(config, "agent.export.ewram", true);
+	regions.iwram = optionBool(config, "agent.export.iwram", true);
+	regions.vram = optionBool(config, "agent.export.vram", true);
+	regions.oam = optionBool(config, "agent.export.oam", false);
+	regions.palette = optionBool(config, "agent.export.palette", false);
+	regions.io = optionBool(config, "agent.export.io", false);
+	regions.sram = optionBool(config, "agent.export.sram", false);
+	regions.bios = optionBool(config, "agent.export.bios", false);
+	regions.hram = optionBool(config, "agent.export.hram", false);
+	return regions;
+}
+
+bool AgentExportRegions::shouldExport(const mCoreMemoryBlock& block) const {
+	if (block.id < 0) {
+		return false;
+	}
+	if (!(block.flags & mCORE_MEMORY_MAPPED)) {
+		return false;
+	}
+	if (block.flags & mCORE_MEMORY_WORM) {
+		return false;
+	}
+	if (!block.internalName) {
+		return false;
+	}
+	if (!strcmp(block.internalName, "wram")) {
+		return ewram;
+	}
+	if (!strcmp(block.internalName, "iwram")) {
+		return iwram;
+	}
+	if (!strcmp(block.internalName, "vram")) {
+		return vram;
+	}
+	if (!strcmp(block.internalName, "oam")) {
+		return oam;
+	}
+	if (!strcmp(block.internalName, "palette")) {
+		return palette;
+	}
+	if (!strcmp(block.internalName, "io")) {
+		return io;
+	}
+	if (!strcmp(block.internalName, "sram")) {
+		return sram;
+	}
+	if (!strcmp(block.internalName, "bios")) {
+		return bios;
+	}
+	if (!strcmp(block.internalName, "hram")) {
+		return hram;
+	}
+	return false;
 }
 
 AgentSettings AgentSettings::fromConfig(const ConfigController* config) {
@@ -28,5 +87,6 @@ AgentSettings AgentSettings::fromConfig(const ConfigController* config) {
 	if (!settings.port) {
 		settings.port = 8765;
 	}
+	settings.regions = AgentExportRegions::fromConfig(config);
 	return settings;
 }

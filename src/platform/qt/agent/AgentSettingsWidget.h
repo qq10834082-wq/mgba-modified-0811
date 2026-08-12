@@ -35,6 +35,16 @@ private:
 	QCheckBox* m_enabled;
 	QLineEdit* m_host;
 	QSpinBox* m_port;
+
+	QCheckBox* m_exportEwram;
+	QCheckBox* m_exportIwram;
+	QCheckBox* m_exportVram;
+	QCheckBox* m_exportOam;
+	QCheckBox* m_exportPalette;
+	QCheckBox* m_exportIo;
+	QCheckBox* m_exportSram;
+	QCheckBox* m_exportBios;
+	QCheckBox* m_exportHram;
 };
 
 }
