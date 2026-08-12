@@ -17,6 +17,8 @@
 #include <QMutex>
 #include <QMutexLocker>
 
+#include <cstring>
+
 #include <mgba/core/core.h>
 #include <mgba/core/thread.h>
 
@@ -85,14 +87,30 @@ static void runCoreRequest(mCoreThread* context) {
 		}
 		req->ok = true;
 		break;
-	case CoreOp::ReadRange:
-		req->bytes.clear();
-		req->bytes.reserve(req->length);
-		for (uint32_t i = 0; i < req->length; ++i) {
-			req->bytes.append(char(core->busRead8(core, req->address + i) & 0xFF));
+	case CoreOp::ReadRange: {
+		req->bytes.resize(static_cast<int>(req->length));
+		char* out = req->bytes.data();
+		uint32_t remaining = req->length;
+		uint32_t addr = req->address;
+		while (remaining > 0) {
+			size_t blockAvail = 0;
+			void* ptr = mCoreGetMemoryBlock(core, addr, &blockAvail);
+			if (ptr && blockAvail > 0) {
+				const uint32_t n = remaining < blockAvail ? remaining : static_cast<uint32_t>(blockAvail);
+				memcpy(out, ptr, n);
+				out += n;
+				addr += n;
+				remaining -= n;
+			} else {
+				// Unmapped / I/O: preserve bus semantics one byte at a time.
+				*out++ = static_cast<char>(core->busRead8(core, addr) & 0xFF);
+				++addr;
+				--remaining;
+			}
 		}
 		req->ok = true;
 		break;
+	}
 	case CoreOp::Write:
 		switch (req->width) {
 		case 1:

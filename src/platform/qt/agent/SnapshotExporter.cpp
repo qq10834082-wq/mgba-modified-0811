@@ -21,6 +21,8 @@
 #include <QStandardPaths>
 
 #include <mgba/core/core.h>
+#include <mgba/core/interface.h>
+#include <mgba/core/sync.h>
 #include <mgba/core/thread.h>
 #include <mgba/core/version.h>
 #include <mgba-util/vfs.h>
@@ -33,9 +35,22 @@ using namespace QGBA;
 
 namespace {
 
-struct ExportWork {
+struct CaptureWork {
 	QString romPath;
 	AgentExportRegions regions;
+
+	uint32_t frame = 0;
+	unsigned width = 0;
+	unsigned height = 0;
+	size_t stride = 0;
+	QByteArray pixels;
+	QByteArray memory;
+	QJsonArray regionArray;
+	QString romTitle;
+	QString romCode;
+	QString platform;
+	bool paused = false;
+
 	QString outputDir;
 	bool success = false;
 	QString error;
@@ -44,7 +59,7 @@ struct ExportWork {
 // Shared (not thread_local): mCoreThreadRunFunction runs the callback on the
 // emulation thread, while the caller sets this pointer on the UI/RPC thread.
 static QMutex s_exportMutex;
-static ExportWork* s_exportWork = nullptr;
+static CaptureWork* s_captureWork = nullptr;
 
 static QString platformName(mPlatform platform) {
 	switch (platform) {
@@ -93,8 +108,10 @@ static QString resolveSnapshotBaseDir(const QString& romPath) {
 	return docs + QDir::separator() + QStringLiteral("mGBA-agent-snapshots") + QDir::separator() + leaf;
 }
 
-static void runExport(mCoreThread* context) {
-	ExportWork* work = s_exportWork;
+// Emulation thread: same-frame capture only (pixels + memory + metadata fields).
+// No directory creation, PNG encode, or disk I/O here — those stall the game loop.
+static void runCapture(mCoreThread* context) {
+	CaptureWork* work = s_captureWork;
 	if (!work) {
 		return;
 	}
@@ -104,7 +121,7 @@ static void runExport(mCoreThread* context) {
 		return;
 	}
 
-	const uint32_t frame = core->frameCounter(core);
+	work->frame = core->frameCounter(core);
 
 	QString romPath = work->romPath;
 	if (romPath.isEmpty()) {
@@ -116,51 +133,42 @@ static void runExport(mCoreThread* context) {
 	}
 	work->romPath = romPath;
 
-	QString baseDir = resolveSnapshotBaseDir(romPath);
-	const QString dirName = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"))
-		+ QStringLiteral("_f") + QString::number(frame);
-	work->outputDir = baseDir + QDir::separator() + dirName;
-
-	QDir dir;
-	if (!dir.mkpath(work->outputDir)) {
-		// Last resort: always-writable Documents location.
-		const QString leaf = QFileInfo(romPath).completeBaseName().isEmpty()
-			? QStringLiteral("snapshot")
-			: QFileInfo(romPath).completeBaseName();
-		baseDir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
-			+ QDir::separator() + QStringLiteral("mGBA-agent-snapshots")
-			+ QDir::separator() + leaf;
-		work->outputDir = baseDir + QDir::separator() + dirName;
-		if (!dir.mkpath(work->outputDir)) {
-			work->error = QStringLiteral("failed to create output directory");
-			return;
-		}
-	}
-
-#ifdef USE_PNG
-	const QString screenshotPath = work->outputDir + QDir::separator() + QStringLiteral("screenshot.png");
-	// VFileDevice(QString, OpenMode) maps WriteOnly to O_WRONLY only (no O_CREAT).
-	VFile* screenshotVf = VFileDevice::open(screenshotPath, O_CREAT | O_TRUNC | O_WRONLY);
-	if (!screenshotVf) {
-		work->error = QStringLiteral("failed to open screenshot file");
+	core->desiredVideoDimensions(core, &work->width, &work->height);
+	if (!work->width || !work->height) {
+		work->error = QStringLiteral("invalid video dimensions");
 		return;
 	}
-	if (!mCoreTakeScreenshotVF(core, screenshotVf)) {
-		screenshotVf->close(screenshotVf);
-		work->error = QStringLiteral("failed to write screenshot");
+
+	const void* pixels = nullptr;
+	size_t stride = 0;
+	core->getPixels(core, &pixels, &stride);
+	if (!pixels || !stride) {
+		work->error = QStringLiteral("failed to capture pixels");
 		return;
 	}
-	screenshotVf->close(screenshotVf);
-#else
-	work->error = QStringLiteral("PNG support not available");
-	return;
-#endif
+	work->stride = stride;
+	const int pixelBytes = static_cast<int>(stride * work->height * BYTES_PER_PIXEL);
+	work->pixels = QByteArray(static_cast<const char*>(pixels), pixelBytes);
 
 	const mCoreMemoryBlock* blocks;
 	const size_t nBlocks = core->listMemoryBlocks(core, &blocks);
 
-	QByteArray memory;
-	QJsonArray regionArray;
+	int totalMemory = 0;
+	for (size_t i = 0; i < nBlocks; ++i) {
+		const mCoreMemoryBlock& block = blocks[i];
+		if (!work->regions.shouldExport(block)) {
+			continue;
+		}
+		size_t blockSize = 0;
+		const void* data = core->getMemoryBlock(core, block.id, &blockSize);
+		if (data && blockSize) {
+			totalMemory += static_cast<int>(blockSize);
+		}
+	}
+
+	work->memory.clear();
+	work->memory.reserve(totalMemory);
+	work->regionArray = QJsonArray();
 	quint64 offset = 0;
 
 	for (size_t i = 0; i < nBlocks; ++i) {
@@ -175,74 +183,137 @@ static void runExport(mCoreThread* context) {
 			continue;
 		}
 
-		memory.append(data, blockSize);
+		work->memory.append(data, static_cast<int>(blockSize));
 
 		QJsonObject region;
 		region.insert(QStringLiteral("name"), QString::fromUtf8(block.internalName));
 		region.insert(QStringLiteral("address"), static_cast<qint64>(block.start));
 		region.insert(QStringLiteral("offset"), static_cast<qint64>(offset));
 		region.insert(QStringLiteral("size"), static_cast<qint64>(blockSize));
-		regionArray.append(region);
+		work->regionArray.append(region);
 
 		offset += blockSize;
 	}
-
-	const QString memoryPath = work->outputDir + QDir::separator() + QStringLiteral("memory.bin");
-	QFile memoryFile(memoryPath);
-	if (!memoryFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-		work->error = QStringLiteral("failed to open memory file");
-		return;
-	}
-	if (memoryFile.write(memory) != memory.size()) {
-		work->error = QStringLiteral("failed to write memory file");
-		return;
-	}
-	memoryFile.close();
 
 	char title[17] = {};
 	char code[5] = {};
 	core->getGameTitle(core, title);
 	core->getGameCode(core, code);
+	work->romTitle = QString::fromUtf8(title).trimmed();
+	work->romCode = QString::fromUtf8(code).trimmed();
+	work->platform = platformName(core->platform(core));
+	work->success = true;
+}
 
-	unsigned width = 0;
-	unsigned height = 0;
-	core->desiredVideoDimensions(core, &width, &height);
+// mCoreThreadRunFunction clears audioWait/videoFrameWait for the whole callback via
+// _waitPrologue. DisplayGL may see that window and call swapInterval(0). Re-assert
+// controller sync and wake waiters so export cannot leave pacing permanently slow.
+static void restoreEmulationSync(CoreController* controller) {
+	if (!controller || !controller->thread() || !controller->thread()->impl) {
+		return;
+	}
+	controller->setSync(true);
+	mCoreSync* sync = &controller->thread()->impl->sync;
+	mCoreSyncForceFrame(sync);
+	mCoreSyncLockAudio(sync);
+	mCoreSyncConsumeAudio(sync);
+}
+
+static bool writeSnapshotFiles(CaptureWork& work, QString* errorOut) {
+	auto setError = [&](const QString& err) {
+		work.error = err;
+		if (errorOut) {
+			*errorOut = err;
+		}
+	};
+
+	QString baseDir = resolveSnapshotBaseDir(work.romPath);
+	const QString dirName = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"))
+		+ QStringLiteral("_f") + QString::number(work.frame);
+	work.outputDir = baseDir + QDir::separator() + dirName;
+
+	QDir dir;
+	if (!dir.mkpath(work.outputDir)) {
+		const QString leaf = QFileInfo(work.romPath).completeBaseName().isEmpty()
+			? QStringLiteral("snapshot")
+			: QFileInfo(work.romPath).completeBaseName();
+		baseDir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+			+ QDir::separator() + QStringLiteral("mGBA-agent-snapshots")
+			+ QDir::separator() + leaf;
+		work.outputDir = baseDir + QDir::separator() + dirName;
+		if (!dir.mkpath(work.outputDir)) {
+			setError(QStringLiteral("failed to create output directory"));
+			return false;
+		}
+	}
+
+#ifdef USE_PNG
+	const QString screenshotPath = work.outputDir + QDir::separator() + QStringLiteral("screenshot.png");
+	VFile* screenshotVf = VFileDevice::open(screenshotPath, O_CREAT | O_TRUNC | O_WRONLY);
+	if (!screenshotVf) {
+		setError(QStringLiteral("failed to open screenshot file"));
+		return false;
+	}
+	png_structp png = PNGWriteOpen(screenshotVf);
+	png_infop info = PNGWriteHeader(png, work.width, work.height);
+	const bool pngOk = PNGWritePixels(png, work.width, work.height, work.stride, work.pixels.constData());
+	PNGWriteClose(png, info);
+	screenshotVf->close(screenshotVf);
+	if (!pngOk) {
+		setError(QStringLiteral("failed to write screenshot"));
+		return false;
+	}
+#else
+	setError(QStringLiteral("PNG support not available"));
+	return false;
+#endif
+
+	const QString memoryPath = work.outputDir + QDir::separator() + QStringLiteral("memory.bin");
+	QFile memoryFile(memoryPath);
+	if (!memoryFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+		setError(QStringLiteral("failed to open memory file"));
+		return false;
+	}
+	if (memoryFile.write(work.memory) != work.memory.size()) {
+		setError(QStringLiteral("failed to write memory file"));
+		return false;
+	}
+	memoryFile.close();
 
 	QJsonObject metadata;
 	metadata.insert(QStringLiteral("format_version"), 1);
 	metadata.insert(QStringLiteral("mgba_version"), QString::fromUtf8(projectVersion));
-	metadata.insert(QStringLiteral("rom_path"), work->romPath);
-	metadata.insert(QStringLiteral("rom_title"), QString::fromUtf8(title).trimmed());
-	metadata.insert(QStringLiteral("rom_code"), QString::fromUtf8(code).trimmed());
-	metadata.insert(QStringLiteral("platform"), platformName(core->platform(core)));
+	metadata.insert(QStringLiteral("rom_path"), work.romPath);
+	metadata.insert(QStringLiteral("rom_title"), work.romTitle);
+	metadata.insert(QStringLiteral("rom_code"), work.romCode);
+	metadata.insert(QStringLiteral("platform"), work.platform);
 	metadata.insert(QStringLiteral("snapshot_time"), QDateTime::currentDateTime().toString(Qt::ISODate));
-	metadata.insert(QStringLiteral("frame"), static_cast<qint64>(frame));
+	metadata.insert(QStringLiteral("frame"), static_cast<qint64>(work.frame));
 	metadata.insert(QStringLiteral("capture_method"), QStringLiteral("atomic"));
-	metadata.insert(QStringLiteral("paused"), mCoreThreadIsPaused(context));
+	metadata.insert(QStringLiteral("paused"), work.paused);
 
 	QJsonObject screen;
-	screen.insert(QStringLiteral("width"), static_cast<int>(width));
-	screen.insert(QStringLiteral("height"), static_cast<int>(height));
+	screen.insert(QStringLiteral("width"), static_cast<int>(work.width));
+	screen.insert(QStringLiteral("height"), static_cast<int>(work.height));
 	metadata.insert(QStringLiteral("screen"), screen);
 
-	metadata.insert(QStringLiteral("memory_regions"), regionArray);
+	metadata.insert(QStringLiteral("memory_regions"), work.regionArray);
 
 	QJsonObject files;
 	files.insert(QStringLiteral("screenshot"), QStringLiteral("screenshot.png"));
 	files.insert(QStringLiteral("memory"), QStringLiteral("memory.bin"));
 	metadata.insert(QStringLiteral("files"), files);
 
-	const QString metadataPath = work->outputDir + QDir::separator() + QStringLiteral("metadata.json");
+	const QString metadataPath = work.outputDir + QDir::separator() + QStringLiteral("metadata.json");
 	QFile metaFile(metadataPath);
 	if (!metaFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-		work->error = QStringLiteral("failed to open metadata file");
-		return;
+		setError(QStringLiteral("failed to open metadata file"));
+		return false;
 	}
-	const QJsonDocument doc(metadata);
-	metaFile.write(doc.toJson(QJsonDocument::Indented));
+	metaFile.write(QJsonDocument(metadata).toJson(QJsonDocument::Indented));
 	metaFile.close();
 
-	work->success = true;
+	return true;
 }
 
 } // namespace
@@ -264,15 +335,27 @@ QString SnapshotExporter::exportSnapshot(CoreController* controller, const QStri
 		return QString();
 	}
 
-	ExportWork work;
+	CaptureWork work;
 	work.romPath = romPath;
 	work.regions = regions;
+	work.paused = controller->isPaused();
 
 	mCoreThread* thread = controller->thread();
-	QMutexLocker locker(&s_exportMutex);
-	s_exportWork = &work;
-	mCoreThreadRunFunction(thread, runExport);
-	s_exportWork = nullptr;
+	{
+		QMutexLocker locker(&s_exportMutex);
+		s_captureWork = &work;
+		// Use Interrupter instead of mCoreThreadRunFunction:
+		// RunFunction keeps audioWait/videoFrameWait cleared for the entire callback
+		// (_waitPrologue), and DisplayGL may latch swapInterval(0) in that window —
+		// which shows up as a sustained ~40 FPS until a native save/pause recovers it.
+		// Interrupter only clears waits during the brief transition, then restores them
+		// while the core is safely frozen for same-frame capture.
+		CoreController::Interrupter interrupter(controller);
+		runCapture(thread);
+		s_captureWork = nullptr;
+	}
+
+	restoreEmulationSync(controller);
 
 	if (!work.success) {
 		const QString err = work.error.isEmpty() ? QStringLiteral("export failed") : work.error;
@@ -281,5 +364,16 @@ QString SnapshotExporter::exportSnapshot(CoreController* controller, const QStri
 		return QString();
 	}
 
+	// Disk I/O + PNG encode after the core has resumed with sync restored.
+	QString writeError;
+	if (!writeSnapshotFiles(work, &writeError)) {
+		restoreEmulationSync(controller);
+		const QString err = writeError.isEmpty() ? QStringLiteral("export failed") : writeError;
+		setError(err);
+		LOG(QT, WARN) << QObject::tr("Agent snapshot export failed: %1").arg(err);
+		return QString();
+	}
+
+	restoreEmulationSync(controller);
 	return work.outputDir;
 }

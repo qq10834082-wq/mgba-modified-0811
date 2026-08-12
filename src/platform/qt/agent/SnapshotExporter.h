@@ -15,7 +15,9 @@ class CoreController;
 
 class SnapshotExporter {
 public:
-	// Atomically captures screenshot, memory, and metadata for one emulated frame.
+	// Atomically captures screenshot pixels and memory for one emulated frame
+	// (via CoreController::Interrupter), then writes screenshot.png / memory.bin /
+	// metadata.json on the caller thread after sync is restored.
 	// Returns the output directory path, or an empty string on failure.
 	// If errorOut is non-null, it receives a short failure reason.
 	static QString exportSnapshot(CoreController* controller, const QString& romPath, const AgentExportRegions& regions, QString* errorOut = nullptr);
