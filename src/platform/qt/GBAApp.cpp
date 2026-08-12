@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "GBAApp.h"
 
+#include "agent/AgentServer.h"
 #include "AudioProcessor.h"
 #include "CoreController.h"
 #include "CoreManager.h"
@@ -67,6 +68,8 @@ GBAApp::GBAApp(int& argc, char* argv[], ConfigController* config)
 	}
 
 	LogController::global()->load(m_configController);
+
+	m_agentServer = new AgentServer(m_configController, this);
 
 #ifdef USE_DISCORD_RPC
 	ConfigOption* useDiscordPresence = m_configController->addOption("useDiscordPresence");

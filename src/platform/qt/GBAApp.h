@@ -32,6 +32,7 @@ namespace QGBA {
 
 class ConfigController;
 class CoreController;
+class AgentServer;
 class Window;
 
 #ifdef USE_SQLITE3
@@ -76,6 +77,7 @@ public:
 	bool waitOnJob(qint64 jobId, QObject* context, std::function<void ()> callback);
 
 	ApplicationUpdater* updater() { return &m_updater; }
+	AgentServer* agentServer() { return m_agentServer; }
 	QString invokeOnExit() { return m_invokeOnExit; }
 
 public slots:
@@ -118,6 +120,7 @@ private:
 	MultiplayerController m_multiplayer;
 	CoreManager m_manager;
 	ApplicationUpdater m_updater;
+	AgentServer* m_agentServer = nullptr;
 	QString m_invokeOnExit;
 
 	QMap<qint64, WorkerJob*> m_workerJobs;

@@ -24,6 +24,7 @@
 #endif
 
 #include "AboutScreen.h"
+#include "agent/AgentServer.h"
 #include "AudioProcessor.h"
 #include "BattleChipView.h"
 #include "CheatsView.h"
@@ -825,6 +826,7 @@ void Window::focusInEvent(QFocusEvent*) {
 	if (m_display) {
 		m_display->forceDraw();
 	}
+	syncAgentContext();
 }
 
 void Window::focusOutEvent(QFocusEvent*) {
@@ -1639,6 +1641,7 @@ void Window::setupMenu(QMenuBar* menubar) {
 	addGameAction(tr("Take &screenshot"), "screenshot", [this]() {
 		m_controller->screenshot();
 	}, "av", tr("F12"));
+
 #endif
 
 #ifdef USE_FFMPEG
@@ -2171,6 +2174,17 @@ void Window::setController(CoreController* controller, const QString& fname) {
 		m_controller->setPaused(true);
 		m_pendingPause = false;
 	}
+
+	syncAgentContext();
+}
+
+void Window::syncAgentContext() {
+	AgentServer* agent = GBAApp::app()->agentServer();
+	if (!agent) {
+		return;
+	}
+	agent->setController(m_controller);
+	agent->setRomPath(windowFilePath());
 }
 
 void Window::attachDisplay() {

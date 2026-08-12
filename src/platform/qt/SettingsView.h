@@ -26,6 +26,7 @@ class ConfigController;
 class InputController;
 class ShortcutController;
 class ShaderSelector;
+class AgentSettingsWidget;
 
 class SettingsView : public QDialog {
 Q_OBJECT
@@ -46,6 +47,7 @@ public:
 		CONTROLLERS,
 		SHORTCUTS,
 		SHADERS,
+		AGENT,
 	};
 
 	SettingsView(ConfigController* controller, InputController* inputController, ShortcutController* shortcutController, LogController* logController, QWidget* parent = nullptr);
@@ -81,6 +83,7 @@ private:
 	ConfigController* m_controller;
 	InputController* m_input;
 	ShaderSelector* m_shader = nullptr;
+	AgentSettingsWidget* m_agentSettings = nullptr;
 	LogConfigModel m_logModel;
 	QTimer m_checkTimer;
 

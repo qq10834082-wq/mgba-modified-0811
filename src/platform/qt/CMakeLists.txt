@@ -79,6 +79,9 @@ set(SOURCE_FILES
 	AbstractUpdater.cpp
 	Action.cpp
 	ActionMapper.cpp
+	agent/AgentServer.cpp
+	agent/AgentSettings.cpp
+	agent/AgentSettingsWidget.cpp
 	ApplicationUpdater.cpp
 	ApplicationUpdatePrompt.cpp
 	AssetInfo.cpp

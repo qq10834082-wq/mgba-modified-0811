@@ -5,6 +5,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "SettingsView.h"
 
+#include "AboutScreen.h"
+#include "agent/AgentServer.h"
+#include "agent/AgentSettingsWidget.h"
 #include "AudioProcessor.h"
 #include "CheckBoxDelegate.h"
 #include "ConfigController.h"
@@ -395,6 +398,14 @@ SettingsView::SettingsView(ConfigController* controller, InputController* inputC
 	shortcutView->setController(shortcutController);
 	shortcutView->setInputController(inputController);
 	addPage(tr("Shortcuts"), shortcutView, Page::SHORTCUTS);
+
+	m_agentSettings = new AgentSettingsWidget(m_controller);
+	addPage(tr("Agent"), m_agentSettings, Page::AGENT);
+	connect(m_agentSettings, &AgentSettingsWidget::settingsChanged, this, [this]() {
+		if (GBAApp::app()->agentServer()) {
+			GBAApp::app()->agentServer()->reload();
+		}
+	});
 }
 
 SettingsView::~SettingsView() {
@@ -670,6 +681,10 @@ void SettingsView::updateConfig() {
 	saveSetting("gb.colors", gbColors);
 #endif
 
+	if (m_agentSettings) {
+		m_agentSettings->save();
+	}
+
 	m_controller->write();
 
 	emit pathsChanged();
@@ -853,6 +868,10 @@ void SettingsView::reloadConfig() {
 		m_ui.multiplayerAudioActive->setChecked(true);
 	} else {
 		m_ui.multiplayerAudioAll->setChecked(true);
+	}
+
+	if (m_agentSettings) {
+		m_agentSettings->load();
 	}
 }
 
