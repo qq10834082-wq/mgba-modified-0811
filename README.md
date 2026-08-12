@@ -6,7 +6,9 @@
 - **Official repository**: [https://github.com/mgba-emu/mgba](https://github.com/mgba-emu/mgba)
 
 This repository contains a modified version based on the official **0.10.5** branch `0.10-modified-0811`.
+
 Its primary purpose is to **integrate an Agent workflow**, allowing agents to read memory and export same-frame snapshots while a game is running, which helps locate text, pointer, and runtime issues.
+
 Not sure what to name this, so I used the github repo creation date.   
 
 ## New Features
