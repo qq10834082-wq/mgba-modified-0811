@@ -8,6 +8,8 @@
 #include "agent/AgentSettings.h"
 
 #include <QString>
+#include <QVector>
+#include <cstdint>
 
 namespace QGBA {
 
@@ -20,7 +22,8 @@ public:
 	// metadata.json on the caller thread after sync is restored.
 	// Returns the output directory path, or an empty string on failure.
 	// If errorOut is non-null, it receives a short failure reason.
-	static QString exportSnapshot(CoreController* controller, const QString& romPath, const AgentExportRegions& regions, QString* errorOut = nullptr);
+	static QString exportSnapshot(CoreController* controller, const QString& romPath, const AgentExportRegions& regions,
+	                              const QVector<uint32_t>& focusAddresses = QVector<uint32_t>(), QString* errorOut = nullptr);
 };
 
 }

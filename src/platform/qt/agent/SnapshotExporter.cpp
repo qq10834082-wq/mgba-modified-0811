@@ -49,6 +49,13 @@ struct CaptureWork {
 	QString romTitle;
 	QString romCode;
 	QString platform;
+	uint32_t inputMask = 0;
+	uint32_t pc = 0;
+	uint32_t lr = 0;
+	bool hasPc = false;
+	bool hasLr = false;
+	QVector<uint32_t> focusAddresses;
+	QJsonArray focusValues;
 	bool paused = false;
 
 	QString outputDir;
@@ -122,6 +129,11 @@ static void runCapture(mCoreThread* context) {
 	}
 
 	work->frame = core->frameCounter(core);
+	work->inputMask = core->getKeys ? core->getKeys(core) : 0;
+	if (core->readRegister) {
+		work->hasPc = core->readRegister(core, "pc", &work->pc);
+		work->hasLr = core->readRegister(core, "lr", &work->lr);
+	}
 
 	QString romPath = work->romPath;
 	if (romPath.isEmpty()) {
@@ -202,6 +214,12 @@ static void runCapture(mCoreThread* context) {
 	work->romTitle = QString::fromUtf8(title).trimmed();
 	work->romCode = QString::fromUtf8(code).trimmed();
 	work->platform = platformName(core->platform(core));
+	for (uint32_t address : work->focusAddresses) {
+		QJsonObject value;
+		value.insert(QStringLiteral("address"), static_cast<qint64>(address));
+		value.insert(QStringLiteral("value"), static_cast<qint64>(core->busRead32(core, address)));
+		work->focusValues.append(value);
+	}
 	work->success = true;
 }
 
@@ -291,6 +309,16 @@ static bool writeSnapshotFiles(CaptureWork& work, QString* errorOut) {
 	metadata.insert(QStringLiteral("frame"), static_cast<qint64>(work.frame));
 	metadata.insert(QStringLiteral("capture_method"), QStringLiteral("atomic"));
 	metadata.insert(QStringLiteral("paused"), work.paused);
+	metadata.insert(QStringLiteral("input_mask"), static_cast<qint64>(work.inputMask));
+	metadata.insert(QStringLiteral("focus_values"), work.focusValues);
+	QJsonObject cpu;
+	if (work.hasPc) {
+		cpu.insert(QStringLiteral("pc"), static_cast<qint64>(work.pc));
+	}
+	if (work.hasLr) {
+		cpu.insert(QStringLiteral("lr"), static_cast<qint64>(work.lr));
+	}
+	metadata.insert(QStringLiteral("cpu"), cpu);
 
 	QJsonObject screen;
 	screen.insert(QStringLiteral("width"), static_cast<int>(work.width));
@@ -318,7 +346,8 @@ static bool writeSnapshotFiles(CaptureWork& work, QString* errorOut) {
 
 } // namespace
 
-QString SnapshotExporter::exportSnapshot(CoreController* controller, const QString& romPath, const AgentExportRegions& regions, QString* errorOut) {
+QString SnapshotExporter::exportSnapshot(CoreController* controller, const QString& romPath, const AgentExportRegions& regions,
+                                         const QVector<uint32_t>& focusAddresses, QString* errorOut) {
 	auto setError = [errorOut](const QString& err) {
 		if (errorOut) {
 			*errorOut = err;
@@ -338,20 +367,27 @@ QString SnapshotExporter::exportSnapshot(CoreController* controller, const QStri
 	CaptureWork work;
 	work.romPath = romPath;
 	work.regions = regions;
+	work.focusAddresses = focusAddresses;
 	work.paused = controller->isPaused();
 
 	mCoreThread* thread = controller->thread();
 	{
 		QMutexLocker locker(&s_exportMutex);
 		s_captureWork = &work;
-		// Use Interrupter instead of mCoreThreadRunFunction:
-		// RunFunction keeps audioWait/videoFrameWait cleared for the entire callback
-		// (_waitPrologue), and DisplayGL may latch swapInterval(0) in that window —
-		// which shows up as a sustained ~40 FPS until a native save/pause recovers it.
-		// Interrupter only clears waits during the brief transition, then restores them
-		// while the core is safely frozen for same-frame capture.
-		CoreController::Interrupter interrupter(controller);
-		runCapture(thread);
+		if (work.paused) {
+			// An already-paused core cannot be interrupted: the emulation thread is
+			// waiting on its condition variable and mCoreThreadInterrupt() does not
+			// wake that wait. Run the short, in-memory capture callback on that
+			// thread instead; no disk I/O occurs here.
+			mCoreThreadRunFunction(thread, runCapture);
+		} else {
+			// RunFunction keeps audioWait/videoFrameWait cleared for the whole
+			// callback, and DisplayGL may latch swapInterval(0) in that window.
+			// Interrupter only clears waits during the brief transition, then
+			// restores them while the core is safely frozen for same-frame capture.
+			CoreController::Interrupter interrupter(controller);
+			runCapture(thread);
+		}
 		s_captureWork = nullptr;
 	}
 

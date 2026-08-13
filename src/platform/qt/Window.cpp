@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "Window.h"
 
+#include <QEventLoop>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenuBar>
@@ -378,6 +379,84 @@ void Window::selectROM() {
 	if (!filename.isEmpty()) {
 		setController(m_manager->loadGame(filename), filename);
 	}
+}
+
+bool Window::loadRomFromAgent(const QString& path, QString* error) {
+	auto fail = [error](const QString& message) {
+		if (error) {
+			*error = message;
+		}
+		return false;
+	};
+
+	QFileInfo info(path);
+	if (!info.isAbsolute()) {
+		return fail(tr("ROM path must be absolute"));
+	}
+	if (!info.isReadable()) {
+		return fail(tr("ROM file is not readable: %1").arg(path));
+	}
+
+	CoreController* controller = m_manager->loadGame(info.absoluteFilePath());
+	if (!controller) {
+		return fail(tr("could not load ROM: %1").arg(path));
+	}
+
+	QEventLoop loop;
+	QTimer timeout;
+	timeout.setSingleShot(true);
+	bool started = false;
+	bool failed = false;
+	QMetaObject::Connection startedConnection = connect(controller, &CoreController::started, &loop, [&]() {
+		started = true;
+		loop.quit();
+	});
+	QMetaObject::Connection failedConnection = connect(controller, &CoreController::failed, &loop, [&]() {
+		failed = true;
+		loop.quit();
+	});
+	QMetaObject::Connection timeoutConnection = connect(&timeout, &QTimer::timeout, &loop, [&]() {
+		loop.quit();
+	});
+
+	setController(controller, info.absoluteFilePath());
+	timeout.start(10000);
+	if (!started && !failed) {
+		loop.exec();
+	}
+	timeout.stop();
+	disconnect(startedConnection);
+	disconnect(failedConnection);
+	disconnect(timeoutConnection);
+
+	if (!started || failed || m_controller.get() != controller || !controller->hasStarted()) {
+		return fail(failed ? tr("ROM failed to start") : tr("timed out waiting for ROM to load"));
+	}
+
+	bool paused = controller->isPaused();
+	if (!paused) {
+		paused = false;
+		QMetaObject::Connection pausedConnection = connect(controller, &CoreController::paused, &loop, [&]() {
+			paused = true;
+			loop.quit();
+		});
+		QMetaObject::Connection pauseTimeoutConnection = connect(&timeout, &QTimer::timeout, &loop, [&]() {
+			loop.quit();
+		});
+		controller->setPaused(true);
+		timeout.start(5000);
+		if (!controller->isPaused()) {
+			loop.exec();
+		}
+		timeout.stop();
+		disconnect(pausedConnection);
+		disconnect(pauseTimeoutConnection);
+		paused = controller->isPaused();
+	}
+	if (!paused) {
+		return fail(tr("ROM loaded but could not pause emulation"));
+	}
+	return true;
 }
 
 void Window::bootBIOS() {
@@ -2208,7 +2287,7 @@ void Window::exportAgentSnapshot() {
 	const QString romPath = windowFilePath();
 	const AgentExportRegions regions = AgentExportRegions::fromConfig(m_config);
 	QString error;
-	const QString outDir = SnapshotExporter::exportSnapshot(m_controller.get(), romPath, regions, &error);
+	const QString outDir = SnapshotExporter::exportSnapshot(m_controller.get(), romPath, regions, {}, &error);
 	if (outDir.isEmpty()) {
 		showStatus(tr("Agent snapshot failed: %1").arg(error.isEmpty() ? tr("unknown error") : error));
 		return;

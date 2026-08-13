@@ -68,6 +68,7 @@ public:
 	void updateMultiplayerActive(bool active);
 
 	InputController* inputController() { return &m_inputController; }
+	bool loadRomFromAgent(const QString& path, QString* error);
 
 signals:
 	void startDrawing();
